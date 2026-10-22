@@ -34,7 +34,11 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: dist/*
+          # Explicit patterns, not dist/*: `uv build` drops a dist/.gitignore
+          # which a bare glob uploads as a junk 1-byte "default.gitignore".
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
           generate_release_notes: true
 
       # No PyPI publish: the `async-bash-mcp` distribution name belongs to
