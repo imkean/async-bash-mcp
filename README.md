@@ -4,6 +4,27 @@
 
 An MCP server for spawning and managing bash commands asynchronously. Run multiple shell commands in parallel and check their progress independently.
 
+## This fork
+
+`imkean/async-bash-mcp` tracks [`xhuw/async-bash-mcp`](https://github.com/xhuw/async-bash-mcp)
+(`develop` stays pinned to upstream) and adds the fixes needed to run it as one
+long-lived HTTP server for every opencode instance. Everything below the
+"Usage" sections still describes upstream behaviour.
+
+- `--transport streamable-http --host --port`, so no wrapper module is needed
+- bounded output buffers with O(1) appends (upstream re-copied the whole buffer
+  for every 1 KiB chunk while holding the global lock)
+- process-group termination, idle-process reaping and stale bookkeeping pruning
+  (processes left behind by a vanished client used to run forever)
+- configurable shell / default cwd — `$SHELL` may be an interactive-only shell
+  under systemd, and `cwd` used to default to the server's own directory
+- process ids seeded from the clock, so ids from a previous run fail as
+  "not found" instead of resolving to an unrelated new process
+- `mcp<2` pin (upstream is unmaintained and breaks against `mcp` 2.x)
+
+See [`deploy/README.md`](deploy/README.md) for the systemd + HTTP setup and the
+`ASYNC_BASH_*` environment knobs.
+
 ## Usage with opencode
 
 Add to your `opencode.json` config to replace the bash tool with async-bash-mcp:
