@@ -1,6 +1,6 @@
 # async-bash-mcp
 
-[![pypi](https://img.shields.io/pypi/v/async-bash-mcp)](https://pypi.org/project/async-bash-mcp/) [![Test](https://github.com/xhuw/async-bash-mcp/actions/workflows/test.yaml/badge.svg)](https://github.com/xhuw/async-bash-mcp/actions/workflows/test.yaml)
+[![pypi](https://img.shields.io/badge/pypi-upstream%20only-lightgrey)](https://pypi.org/project/async-bash-mcp/) [![Test](https://github.com/imkean/async-bash-mcp/actions/workflows/test.yaml/badge.svg)](https://github.com/imkean/async-bash-mcp/actions/workflows/test.yaml)
 
 An MCP server for spawning and managing bash commands asynchronously. Run multiple shell commands in parallel and check their progress independently.
 
@@ -20,7 +20,10 @@ long-lived HTTP server for every opencode instance. Everything below the
   under systemd, and `cwd` used to default to the server's own directory
 - process ids seeded from the clock, so ids from a previous run fail as
   "not found" instead of resolving to an unrelated new process
-- `mcp<2` pin (upstream is unmaintained and breaks against `mcp` 2.x)
+- runs on MCP Python SDK 2.x (`FastMCP` is now `MCPServer`), and scopes each
+  client's processes to its transport session — v1 read `ctx.client_id`, which
+  is `None` for every real client, so all clients used to share one namespace
+  (upstream still pins `mcp<2`)
 
 See [`deploy/README.md`](deploy/README.md) for the systemd + HTTP setup and the
 `ASYNC_BASH_*` environment knobs.

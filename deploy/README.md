@@ -63,9 +63,10 @@ for the real figure.
   active.
 - No authentication. The port is bound to loopback; anything running as this
   user can drive the server, which means arbitrary command execution.
-- Process managers are keyed by MCP client id, and the streamable HTTP
-  transport reports `client_id == None`, so **all clients share one process
-  namespace**. Sessions do not get per-client cleanup; abandoned processes are
-  handled by `ASYNC_BASH_IDLE_TIMEOUT` instead.
+- **Processes are scoped to the transport session.** Each streamable HTTP
+  `mcp-session-id` gets its own process namespace, so two opencode sessions
+  cannot see or poll each other's processes. Idle managers are dropped by the
+  reaper once they hold no processes; commands from a vanished client are
+  still cleaned up by `ASYNC_BASH_IDLE_TIMEOUT`.
 - A server restart drops in-flight results. Ids are seeded from the clock so a
   stale id fails as "not found" instead of resolving to a new process.

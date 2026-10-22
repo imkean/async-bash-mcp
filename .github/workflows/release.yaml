@@ -5,37 +5,40 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   release:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-
-      - name: Set up Python
-        run: uv python install
+          python-version: "3.13"
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest
 
       - name: Build package
         run: uv build
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
 
-      - name: Publish to PyPI
-        run: uv publish
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.UV_PUBLISH_TOKEN }}
+      # No PyPI publish: the `async-bash-mcp` distribution name belongs to
+      # upstream xhuw/async-bash-mcp, so `uv publish` from this fork can only
+      # fail with a permission error. This fork is consumed from git
+      # (`uv sync` of a checkout) -- see deploy/README.md. If publishing ever
+      # becomes desirable, rename the distribution first and restore an
+      # OIDC/token-based publish step here.

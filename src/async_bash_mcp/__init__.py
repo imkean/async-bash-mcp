@@ -12,6 +12,9 @@ upstream are marked with "[fork]" and cover:
   pruning (upstream leaked processes and entries when a client vanished)
 * configurable shell and default working directory
 * process ids that do not collide with ids from a previous server run
+* runs on MCP Python SDK 2.x, where ``FastMCP`` is ``MCPServer`` and
+  ``Context.client_id`` no longer exists (per-client state is keyed on the
+  transport session instead -- see ``_client_key``)
 """
 
 import asyncio
@@ -31,7 +34,7 @@ from typing import Dict, List, Optional, Union
 from platformdirs import user_log_dir
 from pydantic import BaseModel
 
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from mcp.server.session import ServerSession
 
 
@@ -162,6 +165,10 @@ class ProcessManager:
 
     def __init__(self):
         self._processes: Dict[int, ProcessInfo] = {}
+        # [fork] Spawns that have not registered a process yet. Without this the
+        # reaper can drop an "empty" manager while a spawn is between getting
+        # the manager and inserting into ``_processes``, stranding the process.
+        self._pending = 0
         self._lock = threading.Lock()
 
     @classmethod
@@ -224,41 +231,50 @@ class ProcessManager:
             raise ValueError(f"Invalid working directory: {e}")
 
     async def spawn_process(self, command: str, cwd: Optional[str] = None) -> int:
-        # Validate inputs
-        self._validate_command(command)
-        validated_cwd = self._validate_cwd(cwd)
-
-        shell = SHELL
-
-        # Use the user's shell to execute the command. [fork] The child gets its
-        # own session/process group so terminate() can take down the whole tree
-        # (upstream killed only the direct shell child and orphaned the rest).
-        proc = await asyncio.create_subprocess_exec(
-            shell,
-            "-c",
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=validated_cwd,
-            start_new_session=True,
-        )
-
-        process_id = self._get_next_id()
-        process_info = ProcessInfo(
-            id=process_id,
-            command=command,
-            process=proc,
-            start_time=time.time(),
-            cwd=validated_cwd,
-            last_poll=time.time(),
-        )
-
+        # [fork] Mark the manager busy before the first await, so the reaper
+        # cannot decide it is empty while this spawn is in flight.
         with self._lock:
-            self._processes[process_id] = process_info
-            # Start background task to read output while holding lock
-            asyncio.create_task(self._read_process_output(process_info))
+            self._pending += 1
+        try:
+            # Validate inputs
+            self._validate_command(command)
+            validated_cwd = self._validate_cwd(cwd)
 
-        return process_id
+            shell = SHELL
+
+            # Use the user's shell to execute the command. [fork] The child gets
+            # its own session/process group so terminate() can take down the
+            # whole tree (upstream killed only the direct shell child and
+            # orphaned the rest).
+            proc = await asyncio.create_subprocess_exec(
+                shell,
+                "-c",
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=validated_cwd,
+                start_new_session=True,
+            )
+
+            process_id = self._get_next_id()
+            process_info = ProcessInfo(
+                id=process_id,
+                command=command,
+                process=proc,
+                start_time=time.time(),
+                cwd=validated_cwd,
+                last_poll=time.time(),
+            )
+
+            with self._lock:
+                self._processes[process_id] = process_info
+                # Start background task to read output while holding lock
+                asyncio.create_task(self._read_process_output(process_info))
+
+            return process_id
+        finally:
+            with self._lock:
+                self._pending -= 1
 
     async def _read_process_output(self, process_info: ProcessInfo):
         async def read_stream(stream, buffer: OutputBuffer):
@@ -335,6 +351,11 @@ class ProcessManager:
                 {"ID": proc.id, "command": proc.command, "done": proc.finished}
                 for proc in self._processes.values()
             ]
+
+    def is_empty(self) -> bool:
+        """[fork] True when no process is tracked and none is being spawned."""
+        with self._lock:
+            return not self._processes and not self._pending
 
     async def reap(self) -> None:
         """Kill processes nobody is polling and prune stale bookkeeping. [fork]
@@ -500,6 +521,57 @@ client_managers: Dict[str, ProcessManager] = {}
 client_lock = threading.Lock()
 
 
+def _client_key(ctx) -> str:
+    """Identify the caller's connection, for scoping processes. [fork]
+
+    v1 read ``Context.client_id``, which only ever echoed a non-standard
+    ``client_id`` key from the request's ``_meta`` -- nothing in the SDK or the
+    spec populates it, so every real client shared one manager. v2 removed the
+    attribute entirely.
+
+    Key on what the transport actually tells us instead:
+
+    * Streamable HTTP: the ``mcp-session-id`` header, stable across requests.
+    * Legacy SSE: the ``session_id`` query parameter on the POST endpoint.
+    * stdio: one client per process, so a constant is correct.
+    * Anything else (stateless HTTP, in-process clients): also the constant,
+      matching v1's effective behaviour of one shared manager.
+
+    A ``client_id`` attribute is still honoured before falling back to the
+    stdio constant, which keeps the test doubles and v1-style callers working.
+    """
+    request_context = getattr(ctx, "request_context", None)
+    request = getattr(request_context, "request", None)
+    if request is not None:
+        headers = getattr(request, "headers", None) or {}
+        session_id = headers.get("mcp-session-id")
+        if session_id:
+            return f"http:{session_id}"
+        query = getattr(request, "query_params", None) or {}
+        session_id = query.get("session_id")
+        if session_id:
+            return f"sse:{session_id}"
+
+    client_id = getattr(ctx, "client_id", None)
+    if client_id:
+        return str(client_id)
+    return "stdio"
+
+
+def _drop_client_manager_if_empty(client_id: str, pm: ProcessManager) -> None:
+    """Forget an idle manager whose processes are all gone. [fork]
+
+    Keying on the transport session means a new manager per HTTP session, so
+    without this the dict would grow for the life of the process.
+    """
+    with client_lock:
+        if client_managers.get(client_id) is not pm:
+            return
+        if not pm.is_empty():
+            return
+        del client_managers[client_id]
+
+
 def get_client_process_manager(client_id: str) -> ProcessManager:
     """Get or create a ProcessManager for a specific client"""
     with client_lock:
@@ -536,6 +608,7 @@ async def _reaper_loop() -> None:
                 await pm.reap()
             except Exception:  # pragma: no cover - defensive
                 logger.exception("reaper failed for client %s", client_id)
+            _drop_client_manager_if_empty(client_id, pm)
 
 
 @asynccontextmanager
@@ -551,8 +624,8 @@ async def lifespan(app):
             pass
 
 
-# Create FastMCP server
-mcp = FastMCP("async-bash-mcp", lifespan=lifespan)
+# Create the MCP server (FastMCP before SDK 2.x)
+mcp = MCPServer("async-bash-mcp", lifespan=lifespan)
 root_log = logging.getLogger()
 log_dir = Path(user_log_dir("async_bash_mcp", ""))
 log_dir.mkdir(parents=True, exist_ok=True)
@@ -590,15 +663,15 @@ async def spawn(
         SpawnResult with the unique process ID
     """
 
-    progress_token = (
-        ctx.request_context.meta.progressToken if ctx.request_context.meta else None
-    )
+    meta = ctx.request_context.meta
+    progress_token = meta.get("progress_token") if meta else None
+    client_id = _client_key(ctx)
     logger.info(
-        f"Spawning process for client {ctx.client_id} with command: {command}, cwd: {cwd}, progress token: {progress_token}"
+        f"Spawning process for client {client_id} with command: {command}, cwd: {cwd}, progress token: {progress_token}"
     )
     progress_message = (cwd or "") + "$ " + command
     await ctx.report_progress(0, message=progress_message)
-    pm = get_client_process_manager(ctx.client_id)
+    pm = get_client_process_manager(client_id)
     process_id = await pm.spawn_process(command, cwd)
     await ctx.report_progress(1, message=progress_message)
     return SpawnResult(id=process_id)
@@ -612,7 +685,7 @@ async def list_processes(ctx: Context[ServerSession, dict] = None) -> ListResult
     Returns:
         ListResult containing list of processes with their ID, command, and completion status
     """
-    pm = get_client_process_manager(ctx.client_id)
+    pm = get_client_process_manager(_client_key(ctx))
     processes = pm.list_processes()
     return ListResult(processes=[ProcessListItem(**proc) for proc in processes])
 
@@ -649,7 +722,7 @@ async def poll(
             # Connection closed or other error, ignore
             pass
 
-    pm = get_client_process_manager(ctx.client_id)
+    pm = get_client_process_manager(_client_key(ctx))
     try:
         result = await pm.poll_process(process_id, wait, terminate, progress_callback)
         return PollResult(**result)
@@ -675,11 +748,13 @@ def main():
     )
     args = parser.parse_args()
 
+    # [fork] Transport options are arguments of run()/the app methods since
+    # SDK 2.x; v1 set them on ``mcp.settings``, which no longer exists.
+    run_kwargs = {}
     if args.transport in ("streamable-http", "sse"):
-        mcp.settings.host = args.host
-        mcp.settings.port = args.port
+        run_kwargs = {"host": args.host, "port": args.port}
 
-    mcp.run(transport=args.transport)
+    mcp.run(transport=args.transport, **run_kwargs)
 
 
 if __name__ == "__main__":

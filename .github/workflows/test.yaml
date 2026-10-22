@@ -1,24 +1,35 @@
 name: Test
 
 on:
-  push
+  push:
+    branches: [main]
+  pull_request:
 
+permissions:
+  contents: read
 
 jobs:
   test:
-
-    name: python
-    runs-on: ubuntu-latest
+    name: python 3.13
+    # Pinned rather than ubuntu-latest: the label moves to a new Ubuntu release
+    # on its own schedule, and this fork must keep working unattended.
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.13"
 
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
+      - name: Lint
+        run: uv run ruff check
+
       - name: Run tests
-        # For example, using `pytest`
+        # Includes the stdio and streamable HTTP end-to-end tests.
         run: uv run pytest

@@ -1,6 +1,6 @@
 [project]
 name = "async-bash-mcp"
-version = "0.1.6"
+version = "0.2.0"
 description = "A robust subprocess execution MCP"
 readme = "README.md"
 homepage = "https://github.com/xhuw/async-bash-mcp"
@@ -9,7 +9,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "mcp>=1.12.3,<2",
+    "mcp>=2,<3",
     "platformdirs>=4.3.8",
 ]
 
