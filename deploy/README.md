@@ -57,6 +57,10 @@ for the real figure.
 
 ## Known limits
 
+- **Restarting the service wedges connected clients.** opencode keeps its MCP
+  session id after the restart and cannot recover (`400 No valid session ID`);
+  the affected session has to be restarted. Restart only when no session is
+  active.
 - No authentication. The port is bound to loopback; anything running as this
   user can drive the server, which means arbitrary command execution.
 - Process managers are keyed by MCP client id, and the streamable HTTP
