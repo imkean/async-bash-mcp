@@ -47,6 +47,23 @@ def mock_context_2():
     return MockContext()
 
 
+async def poll_until_finished(process_manager, process_id, timeout=30.0):
+    """Poll a process to completion, returning the stdout accumulated so far.
+
+    Tests that slept for a fixed time and then asserted `finished` were flakes:
+    the shell work takes longer than the sleep on a loaded runner. Polling also
+    drains the output buffers, so it has to accumulate them.
+    """
+    stdout = ""
+    deadline = time.time() + timeout
+    while True:
+        result = await process_manager.poll_process(process_id, wait_ms=1000)
+        stdout += result["stdout"]
+        if result["finished"]:
+            return stdout
+        assert time.time() < deadline, f"process {process_id} did not finish"
+
+
 @pytest.mark.asyncio
 async def test_process_manager_spawn_simple_command(process_manager):
     """Test spawning a simple echo command"""
@@ -305,14 +322,10 @@ async def test_concurrent_processes(process_manager):
     # All should have unique IDs
     assert len(set(process_ids)) == 5
 
-    # Wait for completion
-    await asyncio.sleep(0.3)
-
     # Check all processes
-    for process_id in process_ids:
-        result = await process_manager.poll_process(process_id, wait_ms=100)
-        assert result["finished"] is True
-        assert f"Process {process_ids.index(process_id)}" in result["stdout"]
+    for i, process_id in enumerate(process_ids):
+        stdout = await poll_until_finished(process_manager, process_id)
+        assert f"Process {i}" in stdout
 
 
 @pytest.mark.asyncio
@@ -323,14 +336,12 @@ async def test_long_output_handling(process_manager):
         "seq 1 100 | while read i; do echo 'Line '$i; done"
     )
 
-    await asyncio.sleep(0.3)
-    result = await process_manager.poll_process(process_id, wait_ms=100)
+    stdout = await poll_until_finished(process_manager, process_id)
 
-    assert result["finished"] is True
-    assert "Line 1" in result["stdout"]
-    assert "Line 100" in result["stdout"]
+    assert "Line 1" in stdout
+    assert "Line 100" in stdout
     # Should have 100 lines
-    assert len([line for line in result["stdout"].split("\n") if line.strip()]) == 100
+    assert len([line for line in stdout.split("\n") if line.strip()]) == 100
 
 
 @pytest.mark.asyncio
