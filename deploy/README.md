@@ -5,21 +5,31 @@ serves every opencode instance; clients connect over streamable HTTP.
 
 ## Install / upgrade
 
+The tracked unit is a **template**: `deploy/async-bash-mcp.service.in` has
+`@REPO@` where an absolute path would go, and `deploy/install.sh` substitutes
+this checkout's real path. That keeps the committed file free of any one
+machine's layout, and lets the checkout live wherever you like.
+
+First-time setup, run from the checkout:
+
 ```bash
-git -C ~/codes/async-bash-mcp pull --ff-only
-cd ~/codes/async-bash-mcp && uv sync        # rebuilds .venv if deps changed
-systemctl --user restart async-bash-mcp.service
+uv sync                     # creates .venv from the pinned dependencies
+deploy/install.sh --now     # render the unit, enable, start
 ```
 
-First-time setup:
+Upgrade:
 
 ```bash
-cd ~/codes/async-bash-mcp && uv sync
-mkdir -p ~/.config/systemd/user
-cp deploy/async-bash-mcp.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now async-bash-mcp.service
+git pull --ff-only
+uv sync                     # only rebuilds .venv if dependencies changed
+deploy/install.sh --restart # re-render, then restart (wedges live clients)
 ```
+
+Re-run `deploy/install.sh` after moving or renaming the checkout, and after
+editing the template: the installed unit is a rendered copy, not a symlink.
+
+If you would rather do it by hand, `deploy/install.sh` is only a `sed` of
+`@REPO@` plus `systemctl --user daemon-reload`.
 
 `opencode.jsonc`:
 

@@ -30,6 +30,16 @@ jobs:
       - name: Lint
         run: uv run ruff check
 
+      - name: No hardcoded checkout paths
+        # The systemd unit is a template rendered by deploy/install.sh, so no
+        # tracked file may encode a home directory or checkout location. The
+        # pathspec excludes this file, which contains the pattern itself.
+        run: |
+          if git grep -n -I -E '~/[A-Za-z]|/home/[^/ ]+/|/Users/[^/ ]+/' -- . ':!.github/workflows/test.yaml'; then
+            echo "::error::hardcoded home/checkout path; use @REPO@ or a placeholder"
+            exit 1
+          fi
+
       - name: Run tests
         # Includes the stdio and streamable HTTP end-to-end tests.
         run: uv run pytest

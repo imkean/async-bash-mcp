@@ -1,6 +1,7 @@
 [Unit]
 Description=async-bash MCP server (single long-lived streamable-HTTP instance)
-Documentation=file:%h/codes/async-bash-mcp/deploy/README.md
+# A URL, not file:%h/... -- the checkout may live anywhere.
+Documentation=https://github.com/imkean/async-bash-mcp/blob/main/deploy/README.md
 After=network.target
 
 [Service]
@@ -16,7 +17,10 @@ ExecStartPre=/usr/bin/mkdir -p /tmp/opencode
 WorkingDirectory=/tmp/opencode
 # Default soft limit (1024) is too low for big builds and dev servers.
 LimitNOFILE=65536
-ExecStart=%h/codes/async-bash-mcp/deploy/serve.sh
+# @REPO@ is substituted by deploy/install.sh with this checkout's absolute path;
+# this file is a template and is not meant to be installed directly. Quoted so
+# a checkout path containing spaces still works.
+ExecStart="@REPO@/deploy/serve.sh"
 Restart=always
 RestartSec=2
 
