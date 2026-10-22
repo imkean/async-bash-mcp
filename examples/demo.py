@@ -1,97 +1,71 @@
 #!/usr/bin/env python3
-"""
-Example script demonstrating the async-bash-mcp server usage.
-This shows how to use the MCP tools for spawning and managing processes.
+"""Example: drive async-bash-mcp over stdio.
+
+Shows the shape of a real client conversation: spawn, poll until finished,
+then clean up. Run it with ``uv run python examples/demo.py``.
 """
 
 import asyncio
-import json
-from mcp import ClientSession
+
+from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
 async def demo_async_bash_mcp():
-    """Demonstrate the async-bash-mcp functionality"""
-    print("🚀 Starting async-bash-mcp demo...")
+    print("Starting async-bash-mcp demo...")
 
-    # Start the MCP server as a subprocess
-    server_params = {"command": "uv", "args": ["run", "async-bash-mcp"]}
+    server_params = StdioServerParameters(command="uv", args=["run", "async-bash-mcp"])
 
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
+            print("Connected")
 
-            print("✅ Connected to MCP server")
+            tools = await session.list_tools()
+            print(f"Tools: {[tool.name for tool in tools.tools]}")
 
-            # List available tools
-            tools_result = await session.list_tools()
-            print(f"📋 Available tools: {[tool.name for tool in tools_result.tools]}")
+            # A short command: spawn, then poll for the output.
+            spawned = await session.call_tool("spawn", {"command": "echo hello"})
+            process_id = spawned.structured_content["id"]
+            print(f"Spawned {process_id}")
 
-            # Test 1: Spawn a simple command
-            print("\n🔧 Test 1: Spawning a simple echo command")
-            spawn_result = await session.call_tool(
-                "spawn", {"command": "echo 'Hello from async-bash-mcp!'"}
+            polled = await session.call_tool(
+                "poll", {"process_id": process_id, "wait": 5000}
             )
-            process_id = spawn_result.content[0].text
-            process_data = json.loads(process_id)
-            pid = process_data["id"]
-            print(f"   Spawned process with ID: {pid}")
+            print(f"stdout: {polled.structured_content['stdout'].strip()}")
+            print(f"exit code: {polled.structured_content['exitCode']}")
 
-            # Wait a moment and poll the result
-            await asyncio.sleep(0.1)
-            poll_result = await session.call_tool("poll", {"ID": pid})
-            poll_data = json.loads(poll_result.content[0].text)
-            print(f"   Output: {poll_data['stdout'].strip()}")
-            print(f"   Finished: {poll_data['finished']}")
-
-            # Test 2: Spawn a long-running command
-            print("\n⏱️  Test 2: Spawning a long-running command")
-            long_spawn_result = await session.call_tool(
+            # A long-running command: poll repeatedly for incremental output,
+            # then terminate it rather than leaving it running.
+            long_running = await session.call_tool(
                 "spawn",
-                {"command": "for i in {1..5}; do echo 'Step $i'; sleep 0.5; done"},
+                {"command": "for i in 1 2 3; do echo step $i; sleep 1; done"},
             )
-            long_process_data = json.loads(long_spawn_result.content[0].text)
-            long_pid = long_process_data["id"]
-            print(f"   Spawned long-running process with ID: {long_pid}")
+            long_id = long_running.structured_content["id"]
+            print(f"Spawned {long_id}")
 
-            # List all processes
-            print("\n📋 Listing all processes:")
-            list_result = await session.call_tool("list_processes", {})
-            processes_data = json.loads(list_result.content[0].text)
-            for proc in processes_data["processes"]:
-                print(
-                    f"   ID: {proc['ID']}, Command: {proc['command']}, Done: {proc['done']}"
+            for _ in range(4):
+                polled = await session.call_tool(
+                    "poll", {"process_id": long_id, "wait": 1000}
                 )
-
-            # Poll the long-running process multiple times to see incremental output
-            print(
-                f"\n🔍 Polling process {long_pid} multiple times for incremental output:"
-            )
-            for i in range(3):
-                await asyncio.sleep(1.5)
-                poll_result = await session.call_tool("poll", {"ID": long_pid})
-                poll_data = json.loads(poll_result.content[0].text)
-                if poll_data["stdout"]:
-                    print(f"   Poll {i + 1}: {poll_data['stdout'].strip()}")
-                print(f"   Finished: {poll_data['finished']}")
-                if poll_data["finished"]:
-                    print(f"   Exit code: {poll_data.get('exitCode', 'N/A')}")
+                data = polled.structured_content
+                if data["stdout"]:
+                    print(f"  {data['stdout'].strip()}")
+                if data["finished"]:
+                    print(f"  finished, exit code {data['exitCode']}")
                     break
 
-            # Test 3: Test working directory
-            print("\n📁 Test 3: Testing working directory")
-            cwd_spawn_result = await session.call_tool(
+            # Working directory per call.
+            cwd_spawned = await session.call_tool(
                 "spawn", {"command": "pwd", "cwd": "/tmp"}
             )
-            cwd_process_data = json.loads(cwd_spawn_result.content[0].text)
-            cwd_pid = cwd_process_data["id"]
+            cwd_id = cwd_spawned.structured_content["id"]
+            polled = await session.call_tool(
+                "poll", {"process_id": cwd_id, "wait": 5000}
+            )
+            print(f"cwd: {polled.structured_content['stdout'].strip()}")
 
-            await asyncio.sleep(0.1)
-            cwd_poll_result = await session.call_tool("poll", {"ID": cwd_pid})
-            cwd_poll_data = json.loads(cwd_poll_result.content[0].text)
-            print(f"   Working directory: {cwd_poll_data['stdout'].strip()}")
-
-            print("\n✅ Demo completed successfully!")
+    print("Done")
 
 
 if __name__ == "__main__":

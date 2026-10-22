@@ -23,4 +23,13 @@ Agents operating here
 - No Copilot or Cursor rules found; if added later, include .github/copilot-instructions.md and .cursor/rules/* in this file.
 - Store all notes about progress being make and plans in the `notes/` directory
 
+MCP SDK 2.x (see notes/mcp2-port.md)
+
+- The server class is `MCPServer` (`mcp.server.mcpserver`), not `FastMCP`.
+- There is no `Context.client_id`; scope per-client state with `_client_key(ctx)`, which reads the transport session (`mcp-session-id` header, else the SSE `session_id` query parameter, else a constant for stdio).
+- Transport options are arguments to `mcp.run(...)`, not `mcp.settings`.
+- `_meta` is a TypedDict: read `meta.get("progress_token")`, not `meta.progressToken`.
+- Do not key per-client state on `id(ctx.session)` / `id(ctx.request_context)`; v2 builds a fresh proxy per request.
+- Keep the transport tests (`tests/test_transports.py`); they are what catch identity regressions.
+
 Keep this file short and machine-readable; update when style tools change.
