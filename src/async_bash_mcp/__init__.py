@@ -370,8 +370,11 @@ class ProcessManager:
         retention = FINISHED_RETENTION
 
         with self._lock:
-            stale = [info for info in self._processes.values() if info.finished
-                     and now - info.last_poll > retention]
+            stale = [
+                info
+                for info in self._processes.values()
+                if info.finished and now - info.last_poll > retention
+            ]
             for info in stale:
                 self._processes.pop(info.id, None)
 
@@ -596,6 +599,63 @@ def cleanup_client_manager(client_id: str):
             del client_managers[client_id]
 
 
+async def _terminate_session_processes(client_id: str) -> None:
+    """Kill the processes of a session whose connection just closed. [fork]
+
+    Registered on the connection's teardown stack, so a client that disconnects
+    (or an editor that vanishes) does not leave commands running until
+    ``ASYNC_BASH_IDLE_TIMEOUT``. This terminates rather than just signalling, so
+    a command that ignores SIGTERM still gets SIGKILL.
+    """
+    with client_lock:
+        pm = client_managers.get(client_id)
+    if pm is None:
+        return
+
+    with pm._lock:
+        pending = [info for info in pm._processes.values() if not info.finished]
+
+    for info in pending:
+        try:
+            await pm.terminate_process(info)
+        except Exception:  # pragma: no cover - defensive
+            logger.exception(
+                "session cleanup failed for process %s of %s", info.id, client_id
+            )
+
+    # Nothing can poll this session again, so drop its bookkeeping entirely
+    # rather than leaving finished entries behind for the reaper to age out.
+    with pm._lock:
+        pm._processes.clear()
+
+    _drop_client_manager_if_empty(client_id, pm)
+
+
+def _register_session_cleanup(ctx, client_id: str) -> None:
+    """Ask the SDK to run ``_terminate_session_processes`` on connection close.
+
+    SDK 2.x unwinds ``Connection.exit_stack`` when a connection tears down and
+    documents that handlers may push cleanup onto it; ``Connection.state`` is the
+    public per-connection dict, which keeps this to one registration.
+
+    ``ServerSession._connection`` is private. If a future SDK moves it, the
+    ``getattr`` yields None and we fall back to the idle reaper rather than
+    breaking tool calls.
+    """
+    connection = getattr(getattr(ctx, "session", None), "_connection", None)
+    if connection is None:  # pragma: no cover - defensive, see docstring
+        return
+    try:
+        if connection.state.get("async_bash_cleanup_registered"):
+            return
+        connection.state["async_bash_cleanup_registered"] = True
+        connection.exit_stack.push_async_callback(
+            _terminate_session_processes, client_id
+        )
+    except AttributeError:  # pragma: no cover - defensive, see docstring
+        return
+
+
 async def _reaper_loop() -> None:
     """[fork] Periodic background reaper for every known client."""
     logger = logging.getLogger("async_bash_mcp")
@@ -666,6 +726,9 @@ async def spawn(
     meta = ctx.request_context.meta
     progress_token = meta.get("progress_token") if meta else None
     client_id = _client_key(ctx)
+    # Register before spawning: a process that starts and then loses its client
+    # mid-call must still be cleaned up.
+    _register_session_cleanup(ctx, client_id)
     logger.info(
         f"Spawning process for client {client_id} with command: {command}, cwd: {cwd}, progress token: {progress_token}"
     )
@@ -743,9 +806,7 @@ def main():
     parser.add_argument(
         "--host", default=os.environ.get("ASYNC_BASH_HOST", "127.0.0.1")
     )
-    parser.add_argument(
-        "--port", type=int, default=_env_int("ASYNC_BASH_PORT", 8769)
-    )
+    parser.add_argument("--port", type=int, default=_env_int("ASYNC_BASH_PORT", 8769))
     args = parser.parse_args()
 
     # [fork] Transport options are arguments of run()/the app methods since
