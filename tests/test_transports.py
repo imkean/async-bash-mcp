@@ -6,6 +6,7 @@ went unnoticed. These tests talk to an actual server over stdio and over
 streamable HTTP, so a broken per-session identity fails them.
 """
 
+import asyncio
 import socket
 import sys
 import threading
@@ -106,6 +107,39 @@ async def test_http_transport_round_trip(http_server):
 
             listed = await session.call_tool("list_processes", {})
             assert listed.structured_content["processes"] == []
+
+
+@pytest.mark.asyncio
+async def test_disconnect_terminates_session_processes(http_server):
+    """A vanished client must not leave its commands running.
+
+    SDK 2.x unwinds the connection's exit stack on teardown, and the server
+    pushes its cleanup there, so this should happen moments after the DELETE
+    rather than after ASYNC_BASH_IDLE_TIMEOUT.
+    """
+    async with streamable_http_client(http_server) as (read, write, *_):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            process_id = await _spawn(session, "sleep 60")
+
+            matches = [
+                (key, pm)
+                for key, pm in list(abm.client_managers.items())
+                if process_id in pm._processes
+            ]
+            assert len(matches) == 1, "no manager owns the spawned process"
+            key, pm = matches[0]
+            info = pm._processes[process_id]
+            assert key.startswith("http:")
+            assert not info.finished
+
+    # Leaving the context sends DELETE; teardown should terminate the process.
+    deadline = time.time() + 10
+    while time.time() < deadline and key in abm.client_managers:
+        await asyncio.sleep(0.05)
+
+    assert key not in abm.client_managers, "session manager was not cleaned up"
+    assert info.finished, "process was not terminated on disconnect"
 
 
 @pytest.mark.asyncio

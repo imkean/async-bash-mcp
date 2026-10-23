@@ -75,8 +75,10 @@ for the real figure.
   user can drive the server, which means arbitrary command execution.
 - **Processes are scoped to the transport session.** Each streamable HTTP
   `mcp-session-id` gets its own process namespace, so two opencode sessions
-  cannot see or poll each other's processes. Idle managers are dropped by the
-  reaper once they hold no processes; commands from a vanished client are
-  still cleaned up by `ASYNC_BASH_IDLE_TIMEOUT`.
+  cannot see or poll each other's processes. When a session disconnects its
+  processes are terminated immediately (the server pushes cleanup onto the
+  SDK's per-connection teardown stack), so a vanished editor no longer leaves
+  commands running; `ASYNC_BASH_IDLE_TIMEOUT` stays as the backstop for clients
+  that disappear without a clean disconnect.
 - A server restart drops in-flight results. Ids are seeded from the clock so a
   stale id fails as "not found" instead of resolving to a new process.
