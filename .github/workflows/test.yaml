@@ -14,6 +14,7 @@ jobs:
     # Pinned rather than ubuntu-latest: the label moves to a new Ubuntu release
     # on its own schedule, and this fork must keep working unattended.
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v7
