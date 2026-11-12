@@ -263,6 +263,20 @@ async def test_poll_tool_with_wait(mock_context):
 
 
 @pytest.mark.asyncio
+async def test_poll_tool_zero_wait_is_immediate(mock_context):
+    """wait=0 means "do not block", not "invalid" (it used to raise)."""
+    spawn_result = await spawn("sleep 5", ctx=mock_context)
+
+    started = time.time()
+    result = await poll(spawn_result.id, wait=0, ctx=mock_context)
+
+    assert time.time() - started < 1.0
+    assert result.finished is False
+
+    await poll(spawn_result.id, wait=100, terminate=True, ctx=mock_context)
+
+
+@pytest.mark.asyncio
 async def test_poll_tool_with_terminate(mock_context):
     """Test poll tool with terminate parameter"""
     spawn_result = await spawn("sleep 10", ctx=mock_context)
@@ -396,6 +410,10 @@ async def test_command_validation_security():
     # Test dangerous patterns
     dangerous_commands = [
         "rm -rf /",
+        "rm -fr /",
+        "rm -r -f /",
+        "rm -rf /*",
+        "rm --recursive --force /",
         ":(){ :|: & };:",  # fork bomb
         "dd if=/dev/zero of=/dev/sda",  # disk filling
     ]
@@ -403,6 +421,18 @@ async def test_command_validation_security():
     for cmd in dangerous_commands:
         with pytest.raises(ValueError, match="potentially dangerous pattern"):
             await process_manager.spawn_process(cmd)
+
+    # Deleting a subdirectory is normal work, even under /.
+    allowed_commands = [
+        "rm -rf /tmp/opencode/build",
+        "rm -rf ./node_modules",
+        "rm -f /tmp/keep.log",
+        "rm -rf /var/lib/docker/volumes/old/_data",
+        'echo "rm -rf /"',
+    ]
+
+    for cmd in allowed_commands:
+        process_manager._validate_command(cmd)  # must not raise
 
 
 @pytest.mark.asyncio

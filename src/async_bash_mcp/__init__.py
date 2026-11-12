@@ -75,6 +75,43 @@ FINISHED_RETENTION = _env_int("ASYNC_BASH_FINISHED_RETENTION", 3600)
 REAP_INTERVAL = _env_int("ASYNC_BASH_REAP_INTERVAL", 60)
 
 
+# ``rm`` with recursive+force flags aimed at the filesystem root. The target has
+# to be exactly ``/`` or ``/*``: ``rm -rf /tmp/whatever`` is routine agent work,
+# but the first version of this guard matched any ``rm -rf /...`` and rejected
+# 65 legitimate commands in one week (2026-11-12). Requiring a command position
+# also keeps the string inside ``echo "rm -rf /"`` or a grep pattern out of it.
+_RM_ROOT_RE = re.compile(
+    r"(?:^|[;|&(])\s*(?:sudo\s+)?rm\s+((?:-{1,2}[a-zA-Z-]+\s+)*)(/\*?)"
+    r"(?=\s|$|[;|&)])",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _removes_root(command: str) -> bool:
+    """True when a command deletes the filesystem root with ``rm``.
+
+    Handles combined (``-rf``) and separate (``-r -f``) short flags, plus the
+    long forms (``--recursive --force``). Only an ``rm`` in command position
+    counts, so quoting the string elsewhere does not trip it. This is a
+    foot-gun guard, not a sandbox: ``rm -rf //`` or a wildcard expanded by the
+    shell will still get through.
+    """
+    for match in _RM_ROOT_RE.finditer(command):
+        recursive = force = False
+        for token in match.group(1).split():
+            if token.startswith("--"):
+                name = token[2:].lower()
+                recursive |= name == "recursive"
+                force |= name == "force"
+            else:
+                letters = token[1:].lower()
+                recursive |= "r" in letters
+                force |= "f" in letters
+        if recursive and force:
+            return True
+    return False
+
+
 def str_last_n_lines(string: str, n: int) -> Optional[str]:
     """Return the last ``n`` lines of ``string`` (None if there are fewer)."""
     idx = len(string)
@@ -190,9 +227,9 @@ class ProcessManager:
         if len(command) > 10000:
             raise ValueError("Command too long (max 10000 characters)")
 
-        # Check for potentially dangerous patterns
+        # Check for potentially dangerous patterns. Root deletion is handled by
+        # _removes_root below, which does not confuse it with `rm -rf /tmp/...`.
         dangerous_patterns = [
-            r"rm\s+-rf\s+/",  # rm -rf /
             r":\(\)\{\s*:\|:\s*&\s*\};:",  # fork bomb
             r"dd\s+if=/dev/zero",  # disk filling
         ]
@@ -203,12 +240,23 @@ class ProcessManager:
                     f"Command contains potentially dangerous pattern: {pattern}"
                 )
 
+        if _removes_root(command):
+            raise ValueError(
+                "Command contains potentially dangerous pattern: rm -rf /"
+            )
+
     def _validate_cwd(self, cwd: Optional[str]) -> Optional[str]:
         """Validate and normalize working directory path"""
         if cwd is None:
             # [fork] Apply the configured default instead of inheriting the
-            # server's own cwd.
+            # server's own cwd. It lives under /tmp, which tmp cleaners can empty
+            # while the server is running, so recreate it on demand.
             cwd = DEFAULT_CWD
+            if cwd is not None:
+                try:
+                    Path(cwd).mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
         if cwd is None:
             return None
 
@@ -769,14 +817,15 @@ async def poll(
 
     Args:
         process_id: The process ID returned by spawn
-        wait: Maximum milliseconds to wait for process completion. Must be greater that 0
+        wait: Maximum milliseconds to wait for process completion. Use 0 to
+            return immediately with whatever output is buffered.
         terminate: If True, terminate the process with SIGTERM before returning results
 
     Returns:
         PollResult with incremental stdout/stderr, elapsed time, and finished flag
     """
-    if wait <= 0:
-        raise ValueError("Wait time must be greater than 0 milliseconds")
+    if wait < 0:
+        raise ValueError("Wait time must be >= 0 milliseconds")
 
     async def progress_callback(elapsed_ms, message):
         try:

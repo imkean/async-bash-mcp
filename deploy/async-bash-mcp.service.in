@@ -11,10 +11,21 @@ Environment=HOST=127.0.0.1
 # Commands run through "$SHELL -c"; without this the unit inherits zsh from the
 # systemd user manager, and zsh does not word-split unquoted variables.
 Environment=SHELL=/usr/bin/bash
+# The user manager's default PATH is the system one only. That hid every CLI
+# installed outside /usr/bin — `aws` in ~/.local/bin and `lark-cli` under nvm
+# (2026-11-03: an agent concluded lark-cli was "not installed"). ~/.local/bin
+# holds symlinks for the nvm tools, so keep it first and let the rest be the
+# normal system order.
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # spawn(cwd=None) lands here. Ephemeral scratch, so a forgotten cwd cannot
-# write into $HOME or a repo root.
+# write into $HOME or a repo root. WorkingDirectory must be a path that always
+# exists: systemd chdirs before running ExecStartPre, so pointing it at
+# /tmp/opencode made the unit fail at boot with status=200/CHDIR whenever /tmp
+# had been cleared (2026-11-06, 2026-11-11). The default cwd is set separately
+# and recreated by the server on demand.
 ExecStartPre=/usr/bin/mkdir -p /tmp/opencode
-WorkingDirectory=/tmp/opencode
+WorkingDirectory=/tmp
+Environment=ASYNC_BASH_DEFAULT_CWD=/tmp/opencode
 # Default soft limit (1024) is too low for big builds and dev servers.
 LimitNOFILE=65536
 # @REPO@ is substituted by deploy/install.sh with this checkout's absolute path;
